@@ -48,7 +48,11 @@ jobs:
           git -C vendor/pico-fido/pico-keys-sdk checkout "$PICO_KEYS_SDK_REV"
 
       - name: Build
-        run: sh tools/build-pico-fido-esp32s3.sh
+        shell: bash
+        run: |
+          # GitHub does not run the image entrypoint, so export the toolchain.
+          . "$IDF_PATH/export.sh"
+          sh tools/build-pico-fido-esp32s3.sh
 
       - name: Write build info
         run: |
