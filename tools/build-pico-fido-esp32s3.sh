@@ -95,11 +95,20 @@ else:
 open(path, 'w').write(text)
 PY
 
+SDKCONFIG="$SRC/sdkconfig"
+print_cfg() {
+    grep -E '^CONFIG_(SPIRAM|SPIRAM_MODE|SPIRAM_SPEED|ESP_CONSOLE_SECONDARY_NONE|ESPTOOLPY_FLASHMODE)' "$SDKCONFIG" || true
+}
+echo "sdkconfig after edit:"
+print_cfg
+
 idf.py -B "$BUILD" -C "$SRC" -DUSB_VID="$FIDO_USB_VID" -DUSB_PID="$FIDO_USB_PID" build
+
+echo "sdkconfig after build:"
+print_cfg
 
 # Never emit an image that could burn eFuses (or change the boot chain) on
 # first boot. security-profiles.sh is the only supported way to do that.
-SDKCONFIG="$SRC/sdkconfig"
 for sym in CONFIG_SECURE_BOOT CONFIG_SECURE_FLASH_ENC_ENABLED; do
     if grep -q "^$sym=y" "$SDKCONFIG"; then
         echo "refusing to build: $sym is enabled in sdkconfig" >&2
@@ -110,6 +119,25 @@ if ! grep -q '^CONFIG_ESPTOOLPY_FLASHMODE_DIO=y' "$SDKCONFIG"; then
     echo "refusing to build: DIO flash mode was not applied to sdkconfig" >&2
     exit 1
 fi
+if ! grep -q '^CONFIG_ESP_CONSOLE_SECONDARY_NONE=y' "$SDKCONFIG"; then
+    echo "refusing to build: the USB-Serial/JTAG secondary console is still enabled" >&2
+    exit 1
+fi
+if [ "$SPIRAM_MODE" = "none" ]; then
+    if grep -q '^CONFIG_SPIRAM=y' "$SDKCONFIG"; then
+        echo "refusing to build: CONFIG_SPIRAM is enabled for SPIRAM_MODE=none" >&2
+        exit 1
+    fi
+else
+    if ! grep -q '^CONFIG_SPIRAM=y' "$SDKCONFIG"; then
+        echo "refusing to build: CONFIG_SPIRAM was dropped for SPIRAM_MODE=$SPIRAM_MODE" >&2
+        exit 1
+    fi
+    if [ "$SPIRAM_MODE" = "oct" ] && ! grep -q '^CONFIG_SPIRAM_MODE_OCT=y' "$SDKCONFIG"; then
+        echo "refusing to build: octal PSRAM mode was dropped from sdkconfig" >&2
+        exit 1
+    fi
+fi
 
 {
     echo "flash_mode=dio"
@@ -117,6 +145,8 @@ fi
     echo "lcd=$([ "$SKIP_LCD" = "1" ] && echo off || echo on)"
     echo "secure_boot=off"
     echo "flash_encryption=off"
+    # Actual values taken from the generated sdkconfig.
+    print_cfg | sed 's/^/sdkconfig: /'
 } > "$BUILD/build-config.txt"
 
 esptool --chip esp32s3 merge-bin \
