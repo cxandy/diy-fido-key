@@ -41,6 +41,21 @@ else
     sh "$ROOT/tools/install-esp32-lcd.sh"
 fi
 
+# ESP-IDF only loads a component's Kconfig when the component is part of the
+# build. The LCD patch adds esp_psram as a dependency; without the panel we
+# must add it ourselves, otherwise CONFIG_SPIRAM does not exist as a symbol
+# and the settings below are silently dropped.
+if [ "$SPIRAM_MODE" != "none" ]; then
+    COMP="$SRC/pico-keys-sdk/config/esp32/components/pico-keys-sdk/CMakeLists.txt"
+    if ! grep -q 'esp_psram' "$COMP"; then
+        perl -0pi -e 's{(\n\s*mbedtls\n\))}{\n    mbedtls\n    esp_psram\n)}' "$COMP"
+    fi
+    if ! grep -q 'esp_psram' "$COMP"; then
+        echo "failed to add esp_psram to the pico-keys-sdk component" >&2
+        exit 1
+    fi
+fi
+
 : "${FIDO_USB_VID:=0x2E8A}"
 : "${FIDO_USB_PID:=0x10FE}"
 
