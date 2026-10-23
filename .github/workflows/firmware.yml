@@ -52,6 +52,8 @@ jobs:
         run: |
           # GitHub does not run the image entrypoint, so export the toolchain.
           . "$IDF_PATH/export.sh"
+          # ESP-IDF v5.5 ships esptool.py; the build script calls `esptool`.
+          command -v esptool >/dev/null 2>&1 || ln -sf "$(command -v esptool.py)" /usr/local/bin/esptool
           sh tools/build-pico-fido-esp32s3.sh
 
       - name: Write build info
