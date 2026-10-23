@@ -1,11 +1,28 @@
 #!/bin/sh
-# Build pico-fido for the ESP32-S3 board (ST7735 80x160) and emit a merged image.
+# Build pico-fido for the ESP32-S3 board and emit a merged image.
 # Requires ESP-IDF v5.5.1 exported in the environment (idf.py on PATH).
+#
+#   SKIP_LCD=1                  build without the ST7735 status display
+#   SPIRAM_MODE=oct|quad|none   PSRAM flavour (default: oct, as on the
+#                               reference board; `none` without PSRAM)
+#
+# The image is plaintext: this script never writes eFuses and refuses to build
+# if secure boot or flash encryption is enabled in sdkconfig.
 set -e
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 SRC="$ROOT/vendor/pico-fido"
 BUILD="$ROOT/build/pico-fido-esp32s3"
+SKIP_LCD=${SKIP_LCD:-0}
+SPIRAM_MODE=${SPIRAM_MODE:-oct}
+
+case "$SPIRAM_MODE" in
+    oct|quad|none) ;;
+    *)
+        echo "SPIRAM_MODE must be oct, quad or none" >&2
+        exit 2
+        ;;
+esac
 
 if [ ! -d "$SRC/pico-keys-sdk" ]; then
     echo "vendor/pico-fido is missing; clone it first (see README)." >&2
@@ -16,49 +33,91 @@ if ! command -v idf.py >/dev/null 2>&1; then
     exit 1
 fi
 
-# Reproducible local patches: LCD status UI.
-sh "$ROOT/tools/install-esp32-lcd.sh"
-
-# On ESP32-S3 the USB Serial/JTAG console shares GPIO19/20 with USB-OTG.
-# Leaving the secondary console enabled makes the firmware watchdog-loop
-# before TinyUSB can enumerate the FIDO HID interface. DIO matches the
-# upstream build and is the only mode verified on this board.
-if [ -f "$SRC/sdkconfig" ]; then
-    python3 - "$SRC/sdkconfig" <<'PY'
-import sys
-path = sys.argv[1]
-text = open(path).read()
-replacements = {
-    '# CONFIG_ESP_CONSOLE_SECONDARY_NONE is not set': 'CONFIG_ESP_CONSOLE_SECONDARY_NONE=y',
-    'CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y': '# CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG is not set',
-    'CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=y': '# CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED is not set',
-    'CONFIG_ESPTOOLPY_FLASHMODE_QIO=y': '# CONFIG_ESPTOOLPY_FLASHMODE_QIO is not set',
-    '# CONFIG_ESPTOOLPY_FLASHMODE_DIO is not set': 'CONFIG_ESPTOOLPY_FLASHMODE_DIO=y',
-    'CONFIG_ESPTOOLPY_FLASHMODE="qio"': 'CONFIG_ESPTOOLPY_FLASHMODE="dio"',
-}
-spiram = {
-    'CONFIG_SPIRAM': 'y',
-    'CONFIG_SPIRAM_MODE_OCT': 'y',
-    'CONFIG_SPIRAM_SPEED_80M': 'y',
-    'CONFIG_SPIRAM_USE_MALLOC': 'y',
-    'CONFIG_SPIRAM_BOOT_INIT': 'y',
-    'CONFIG_SPIRAM_IGNORE_NOTFOUND': 'y',
-}
-for old, new in replacements.items():
-    text = text.replace(old, new)
-for name, value in spiram.items():
-    lines = [l for l in text.splitlines() if not l.startswith(name + '=')]
-    lines.append('%s=%s' % (name, value))
-    text = '\n'.join(lines) + '\n'
-open(path, 'w').write(text)
-PY
+if [ "$SKIP_LCD" = "1" ]; then
+    echo "SKIP_LCD=1: building without the status display"
+else
+    # Reproducible local patches: LCD status UI + PSRAM shadow for the
+    # credential partition (the latter only matters with flash encryption).
+    sh "$ROOT/tools/install-esp32-lcd.sh"
 fi
 
 : "${FIDO_USB_VID:=0x2E8A}"
 : "${FIDO_USB_PID:=0x10FE}"
 
+# set-target regenerates sdkconfig from sdkconfig.defaults, so every setting
+# below must be applied afterwards. Doing it before would be silently lost on
+# a fresh checkout, keeping QIO flash mode and the USB-Serial/JTAG console.
 idf.py -B "$BUILD" -C "$SRC" -DUSB_VID="$FIDO_USB_VID" -DUSB_PID="$FIDO_USB_PID" set-target esp32s3
+
+python3 - "$SRC/sdkconfig" "$SPIRAM_MODE" <<'PY'
+import sys
+
+path, spiram = sys.argv[1], sys.argv[2]
+text = open(path).read()
+
+
+def set_sym(text, name, value=None):
+    lines = [l for l in text.splitlines()
+             if not l.startswith(name + '=') and l != '# %s is not set' % name]
+    if value is None:
+        lines.append('# %s is not set' % name)
+    else:
+        lines.append('%s=%s' % (name, value))
+    return '\n'.join(lines) + '\n'
+
+
+# The USB Serial/JTAG console shares GPIO19/20 with USB-OTG. Leaving the
+# secondary console enabled makes the firmware watchdog-loop before TinyUSB
+# can enumerate the FIDO HID interface.
+text = set_sym(text, 'CONFIG_ESP_CONSOLE_SECONDARY_NONE', 'y')
+text = set_sym(text, 'CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG', None)
+text = set_sym(text, 'CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED', None)
+
+# DIO matches the upstream build and is the only mode verified on the board.
+text = set_sym(text, 'CONFIG_ESPTOOLPY_FLASHMODE_QIO', None)
+text = set_sym(text, 'CONFIG_ESPTOOLPY_FLASHMODE_DIO', 'y')
+text = set_sym(text, 'CONFIG_ESPTOOLPY_FLASHMODE', '"dio"')
+
+if spiram == 'none':
+    for sym in ('CONFIG_SPIRAM', 'CONFIG_SPIRAM_MODE_OCT', 'CONFIG_SPIRAM_MODE_QUAD',
+                'CONFIG_SPIRAM_SPEED_80M', 'CONFIG_SPIRAM_SPEED_40M'):
+        text = set_sym(text, sym, None)
+else:
+    text = set_sym(text, 'CONFIG_SPIRAM', 'y')
+    text = set_sym(text, 'CONFIG_SPIRAM_MODE_OCT', 'y' if spiram == 'oct' else None)
+    text = set_sym(text, 'CONFIG_SPIRAM_MODE_QUAD', 'y' if spiram == 'quad' else None)
+    text = set_sym(text, 'CONFIG_SPIRAM_SPEED_80M', 'y' if spiram == 'oct' else None)
+    text = set_sym(text, 'CONFIG_SPIRAM_SPEED_40M', 'y' if spiram == 'quad' else None)
+    text = set_sym(text, 'CONFIG_SPIRAM_USE_MALLOC', 'y')
+    text = set_sym(text, 'CONFIG_SPIRAM_BOOT_INIT', 'y')
+    text = set_sym(text, 'CONFIG_SPIRAM_IGNORE_NOTFOUND', 'y')
+
+open(path, 'w').write(text)
+PY
+
 idf.py -B "$BUILD" -C "$SRC" -DUSB_VID="$FIDO_USB_VID" -DUSB_PID="$FIDO_USB_PID" build
+
+# Never emit an image that could burn eFuses (or change the boot chain) on
+# first boot. security-profiles.sh is the only supported way to do that.
+SDKCONFIG="$SRC/sdkconfig"
+for sym in CONFIG_SECURE_BOOT CONFIG_SECURE_FLASH_ENC_ENABLED; do
+    if grep -q "^$sym=y" "$SDKCONFIG"; then
+        echo "refusing to build: $sym is enabled in sdkconfig" >&2
+        exit 1
+    fi
+done
+if ! grep -q '^CONFIG_ESPTOOLPY_FLASHMODE_DIO=y' "$SDKCONFIG"; then
+    echo "refusing to build: DIO flash mode was not applied to sdkconfig" >&2
+    exit 1
+fi
+
+{
+    echo "flash_mode=dio"
+    echo "spiram=$SPIRAM_MODE"
+    echo "lcd=$([ "$SKIP_LCD" = "1" ] && echo off || echo on)"
+    echo "secure_boot=off"
+    echo "flash_encryption=off"
+} > "$BUILD/build-config.txt"
 
 esptool --chip esp32s3 merge-bin \
     -o "$BUILD/pico_fido_full.bin" \

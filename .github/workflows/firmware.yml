@@ -19,11 +19,23 @@ concurrency:
 
 jobs:
   esp32s3:
-    name: pico-fido (ESP32-S3, 4MB, LCD)
+    name: pico-fido (ESP32-S3, 4MB, ${{ matrix.variant }})
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     container:
       image: espressif/idf:v5.5.1
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Reference board: ST7735 panel + 8MB octal PSRAM.
+          - variant: lcd
+            skip_lcd: "0"
+            spiram: oct
+          # Generic ESP32-S3 dev board: no panel, no assumed PSRAM.
+          - variant: generic
+            skip_lcd: "1"
+            spiram: none
     env:
       # Personal/dev build. Change these to your own VID/PID before
       # redistributing binaries (see README, "VID/PID").
@@ -32,6 +44,8 @@ jobs:
       # Revisions verified by the upstream project (README, 2026-10-23).
       PICO_FIDO_REV: ade770281dd4fd8c627add34ed078f56ec40a07b
       PICO_KEYS_SDK_REV: a2f0a51588fb523f2d6614e008b4bdbb45e443f1
+      SKIP_LCD: ${{ matrix.skip_lcd }}
+      SPIRAM_MODE: ${{ matrix.spiram }}
     steps:
       - uses: actions/checkout@v4
 
@@ -77,19 +91,22 @@ jobs:
           cd build/pico-fido-esp32s3
           sha256sum pico_fido_full.bin | tee pico_fido_full.bin.sha256
           {
+            echo "variant: ${{ matrix.variant }}"
             echo "pico-fido: $PICO_FIDO_REV"
             echo "pico-keys-sdk: $PICO_KEYS_SDK_REV"
             echo "esp-idf: v5.5.1"
             echo "usb: $FIDO_USB_VID:$FIDO_USB_PID"
             echo "size: $(stat -c%s pico_fido_full.bin) bytes"
+            cat build-config.txt
           } > build-info.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pico_fido_full-esp32s3
+          name: pico_fido_full-esp32s3-${{ matrix.variant }}
           path: |
             build/pico-fido-esp32s3/pico_fido_full.bin
             build/pico-fido-esp32s3/pico_fido_full.bin.sha256
             build/pico-fido-esp32s3/build-info.txt
+            build/pico-fido-esp32s3/build-config.txt
           if-no-files-found: error
           retention-days: 30
