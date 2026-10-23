@@ -61,6 +61,9 @@ jobs:
             case "$a" in
               merge-bin|write-flash|read-flash|erase-flash|erase-region|read-mac|flash-id|chip-id|write-flash-status|read-flash-status)
                 a="${a//-/_}" ;;
+              --flash-mode) a=--flash_mode ;;
+              --flash-freq) a=--flash_freq ;;
+              --flash-size) a=--flash_size ;;
             esac
             args+=("$a")
           done
