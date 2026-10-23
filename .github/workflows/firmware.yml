@@ -36,6 +36,10 @@ jobs:
           - variant: generic
             skip_lcd: "1"
             spiram: none
+          # Generic board with octal (OPI) PSRAM, e.g. N8R8/N16R8 modules.
+          - variant: generic-oct
+            skip_lcd: "1"
+            spiram: oct
     env:
       # Personal/dev build. Change these to your own VID/PID before
       # redistributing binaries (see README, "VID/PID").
