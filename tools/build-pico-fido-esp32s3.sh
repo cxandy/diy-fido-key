@@ -64,10 +64,13 @@ fi
 # a fresh checkout, keeping QIO flash mode and the USB-Serial/JTAG console.
 idf.py -B "$BUILD" -C "$SRC" -DUSB_VID="$FIDO_USB_VID" -DUSB_PID="$FIDO_USB_PID" set-target esp32s3
 
-python3 - "$SRC/sdkconfig" "$SPIRAM_MODE" <<'PY'
+: "${USB_CONSOLE:=0}"
+
+python3 - "$SRC/sdkconfig" "$SPIRAM_MODE" "$USB_CONSOLE" <<'PY'
 import sys
 
 path, spiram = sys.argv[1], sys.argv[2]
+usb_console = sys.argv[3] if len(sys.argv) > 3 else '0'
 text = open(path).read()
 
 
@@ -84,9 +87,24 @@ def set_sym(text, name, value=None):
 # The USB Serial/JTAG console shares GPIO19/20 with USB-OTG. Leaving the
 # secondary console enabled makes the firmware watchdog-loop before TinyUSB
 # can enumerate the FIDO HID interface.
-text = set_sym(text, 'CONFIG_ESP_CONSOLE_SECONDARY_NONE', 'y')
-text = set_sym(text, 'CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG', None)
-text = set_sym(text, 'CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED', None)
+if usb_console == '1':
+    # Debug: route the primary console over USB-Serial/JTAG so boot logs appear
+    # on the native USB port (TinyUSB cannot coexist with this).
+    text = set_sym(text, 'CONFIG_ESP_CONSOLE_UART_DEFAULT', None)
+    text = set_sym(text, 'CONFIG_ESP_CONSOLE_UART_CUSTOM', None)
+    text = set_sym(text, 'CONFIG_ESP_CONSOLE_USB_CDC', None)
+    text = set_sym(text, 'CONFIG_ESP_CONSOLE_NONE', None)
+    text = set_sym(text, 'CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG', 'y')
+    text = set_sym(text, 'CONFIG_ESP_CONSOLE_SECONDARY_NONE', 'y')
+    text = set_sym(text, 'CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG', None)
+    text = set_sym(text, 'CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED', 'y')
+else:
+    text = set_sym(text, 'CONFIG_ESP_CONSOLE_SECONDARY_NONE', 'y')
+    text = set_sym(text, 'CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG', None)
+    text = set_sym(text, 'CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED', None)
+    # Keep the primary console at UART to avoid clashing with TinyUSB; the ROM
+    # and a panic can still log over USB-Serial/JTAG only if it's selected, but
+    # we leave the choice to the project's defaults otherwise.
 
 # DIO matches the upstream build and is the only mode verified on the board.
 text = set_sym(text, 'CONFIG_ESPTOOLPY_FLASHMODE_QIO', None)
@@ -134,9 +152,16 @@ if ! grep -q '^CONFIG_ESPTOOLPY_FLASHMODE_DIO=y' "$SDKCONFIG"; then
     echo "refusing to build: DIO flash mode was not applied to sdkconfig" >&2
     exit 1
 fi
-if ! grep -q '^CONFIG_ESP_CONSOLE_SECONDARY_NONE=y' "$SDKCONFIG"; then
-    echo "refusing to build: the USB-Serial/JTAG secondary console is still enabled" >&2
-    exit 1
+if [ "${USB_CONSOLE:-0}" = "1" ]; then
+    if ! grep -q '^CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y' "$SDKCONFIG"; then
+        echo "refusing to build: primary USB-Serial/JTAG console not set" >&2
+        exit 1
+    fi
+else
+    if ! grep -q '^CONFIG_ESP_CONSOLE_SECONDARY_NONE=y' "$SDKCONFIG"; then
+        echo "refusing to build: the USB-Serial/JTAG secondary console is still enabled" >&2
+        exit 1
+    fi
 fi
 if [ "$SPIRAM_MODE" = "none" ]; then
     if grep -q '^CONFIG_SPIRAM=y' "$SDKCONFIG"; then
@@ -158,10 +183,12 @@ fi
     echo "flash_mode=dio"
     echo "spiram=$SPIRAM_MODE"
     echo "lcd=$([ "$SKIP_LCD" = "1" ] && echo off || echo on)"
+    echo "usb_console=${USB_CONSOLE:-0}"
     echo "secure_boot=off"
     echo "flash_encryption=off"
     # Actual values taken from the generated sdkconfig.
     print_cfg | sed 's/^/sdkconfig: /'
+    grep 'CONFIG_ESP_CONSOLE' "$SDKCONFIG" 2>/dev/null | sed 's/^/sdkconfig: /' || true
 } > "$BUILD/build-config.txt"
 
 esptool --chip esp32s3 merge-bin \

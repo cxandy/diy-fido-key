@@ -32,14 +32,22 @@ jobs:
           - variant: lcd
             skip_lcd: "0"
             spiram: oct
+            usb_console: "0"
           # Generic ESP32-S3 dev board: no panel, no assumed PSRAM.
           - variant: generic
             skip_lcd: "1"
             spiram: none
+            usb_console: "0"
           # Generic board with octal (OPI) PSRAM, e.g. N8R8/N16R8 modules.
           - variant: generic-oct
             skip_lcd: "1"
             spiram: oct
+            usb_console: "0"
+          # Debug: USB-Serial/JTAG primary console to capture boot logs.
+          - variant: debug
+            skip_lcd: "1"
+            spiram: none
+            usb_console: "1"
     env:
       # Personal/dev build. Change these to your own VID/PID before
       # redistributing binaries (see README, "VID/PID").
@@ -50,6 +58,7 @@ jobs:
       PICO_KEYS_SDK_REV: a2f0a51588fb523f2d6614e008b4bdbb45e443f1
       SKIP_LCD: ${{ matrix.skip_lcd }}
       SPIRAM_MODE: ${{ matrix.spiram }}
+      USB_CONSOLE: ${{ matrix.usb_console }}
     steps:
       - uses: actions/checkout@v4
 
